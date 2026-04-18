@@ -1,21 +1,17 @@
-
 import os
 import cv2
-import shutil
 import gdown
-from fastapi import FastAPI, File, UploadFile
+import gradio as gr
 from ultralytics import YOLO
 from model_utils import predict_behavior
 
-app = FastAPI()
-
 # ==============================
-# إعداد الموديل (Lazy Load)
+# Model Setup (Lazy Load)
 # ==============================
 FILE_ID = "1TKayUv4XzgFN2kg-QbR8nje6zbArlJZ8"
 MODEL_PATH = "best.pt"
 
-model = None  # 🔥 مهم
+model = None
 
 
 def get_model():
@@ -33,39 +29,36 @@ def get_model():
 
 
 # ==============================
-# helper
+# IMAGE PREDICTION
 # ==============================
-def is_video(filename: str):
-    return filename.lower().endswith((".mp4", ".avi", ".mov", ".mkv"))
+def predict_image(image):
+    if image is None:
+        return {"error": "No image provided"}
+
+    model_instance = get_model()
+
+    img = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+    return predict_behavior(model_instance, img)
 
 
 # ==============================
-# ENDPOINT
+# VIDEO PREDICTION
 # ==============================
-@app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+def predict_video(video):
+    if video is None:
+        return None, {"error": "No video provided"}
 
-    model_instance = get_model()  # 🔥 تحميل عند الحاجة فقط
+    model_instance = get_model()
 
-    file_path = "temp_input"
-    if is_video(file.filename):
-        file_path += ".mp4"
-    else:
-        file_path += ".jpg"
+    # safe path handling (HF + local + gradio)
+    video_path = getattr(video, "name", None) or video
+    video_path = str(video_path)
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    cap = cv2.VideoCapture(video_path)
 
-    # IMAGE
-    if not is_video(file.filename):
-        img = cv2.imread(file_path)
-
-        result = predict_behavior(model_instance, img)
-
-        return {"type": "image", "result": result}
-
-    # VIDEO
-    cap = cv2.VideoCapture(file_path)
+    if not cap.isOpened():
+        return None, {"error": "Cannot open video"}
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps == 0:
@@ -76,12 +69,13 @@ async def predict(file: UploadFile = File(...)):
     frame_id = 0
     results = []
 
-    while cap.isOpened():
+    while True:
         ret, frame = cap.read()
         if not ret:
             break
 
         if frame_id % frame_interval == 0:
+
             result = predict_behavior(model_instance, frame)
 
             results.append({
@@ -93,7 +87,8 @@ async def predict(file: UploadFile = File(...)):
 
     cap.release()
 
-    return {
+    # 👉 IMPORTANT: return video + json
+    return video_path, {
         "type": "video",
         "total_predictions": len(results),
         "results": results
@@ -101,11 +96,41 @@ async def predict(file: UploadFile = File(...)):
 
 
 # ==============================
-# RUN (Hugging Face)
+# GRADIO UI
+# ==============================
+with gr.Blocks() as demo:
+
+    gr.Markdown("# 🚗 Driver Monitoring AI System")
+
+    # ================= IMAGE =================
+    with gr.Tab("📷 Image"):
+        image_input = gr.Image(type="numpy")
+        image_output = gr.JSON()
+        image_btn = gr.Button("Predict")
+
+        image_btn.click(
+            fn=predict_image,
+            inputs=image_input,
+            outputs=image_output
+        )
+
+    # ================= VIDEO =================
+    with gr.Tab("🎥 Video"):
+        video_input = gr.Video()
+        video_output_video = gr.Video()   # 👈 عرض الفيديو
+        video_output_json = gr.JSON()     # 👈 النتائج
+
+        video_btn = gr.Button("Analyze Video")
+
+        video_btn.click(
+            fn=predict_video,
+            inputs=video_input,
+            outputs=[video_output_video, video_output_json]
+        )
+
+
+# ==============================
+# RUN
 # ==============================
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
-
-
-
+    demo.launch()
