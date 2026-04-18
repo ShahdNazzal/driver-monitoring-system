@@ -1,3 +1,4 @@
+
 import os
 import cv2
 import shutil
@@ -9,64 +10,66 @@ from model_utils import predict_behavior
 app = FastAPI()
 
 # ==============================
-# تحميل الموديل من Google Drive فقط
+# إعداد الموديل (Lazy Load)
 # ==============================
 FILE_ID = "1TKayUv4XzgFN2kg-QbR8nje6zbArlJZ8"
 MODEL_PATH = "best.pt"
 
-url = f"https://drive.google.com/uc?id={FILE_ID}"
+model = None  # 🔥 مهم
 
-gdown.download(url, MODEL_PATH, quiet=False)
 
-model = YOLO(MODEL_PATH)
+def get_model():
+    global model
+
+    if model is None:
+        url = f"https://drive.google.com/uc?id={FILE_ID}"
+
+        if not os.path.exists(MODEL_PATH):
+            gdown.download(url, MODEL_PATH, quiet=False)
+
+        model = YOLO(MODEL_PATH)
+
+    return model
 
 
 # ==============================
-# helper: check video
+# helper
 # ==============================
 def is_video(filename: str):
     return filename.lower().endswith((".mp4", ".avi", ".mov", ".mkv"))
 
 
 # ==============================
-# SMART PREDICTION ENDPOINT
+# ENDPOINT
 # ==============================
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
 
-    # safe temp file name
+    model_instance = get_model()  # 🔥 تحميل عند الحاجة فقط
+
     file_path = "temp_input"
     if is_video(file.filename):
         file_path += ".mp4"
     else:
         file_path += ".jpg"
 
-    # حفظ الملف
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # ======================
-    # IMAGE CASE
-    # ======================
+    # IMAGE
     if not is_video(file.filename):
-
         img = cv2.imread(file_path)
 
-        result = predict_behavior(model, img)
+        result = predict_behavior(model_instance, img)
 
-        return {
-            "type": "image",
-            "result": result
-        }
+        return {"type": "image", "result": result}
 
-    # ======================
-    # VIDEO CASE
-    # ======================
+    # VIDEO
     cap = cv2.VideoCapture(file_path)
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps == 0:
-        fps = 30  # fallback safe value
+        fps = 30
 
     frame_interval = int(fps * 30)
 
@@ -75,13 +78,11 @@ async def predict(file: UploadFile = File(...)):
 
     while cap.isOpened():
         ret, frame = cap.read()
-
         if not ret:
             break
 
         if frame_id % frame_interval == 0:
-
-            result = predict_behavior(model, frame)
+            result = predict_behavior(model_instance, frame)
 
             results.append({
                 "time_sec": int(frame_id / fps),
@@ -99,8 +100,12 @@ async def predict(file: UploadFile = File(...)):
     }
 
 
+# ==============================
+# RUN (Hugging Face)
+# ==============================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=7860)
+
 
 
