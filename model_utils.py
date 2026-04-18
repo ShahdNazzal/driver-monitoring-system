@@ -29,3 +29,5 @@ def predict_behavior(model, img):
         "behavior": str(behavior),
         "confidence": conf
     }
+
+
